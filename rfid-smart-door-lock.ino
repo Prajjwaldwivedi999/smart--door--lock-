@@ -41,6 +41,11 @@ bool changeMode = false;
 String newPIN = "";
 String confirmPIN = "";
 
+// LONG PRESS
+unsigned long keyPressTime = 0;
+bool hashPressed = false;
+bool requestPinChange = false;
+
 // SECURITY
 int wrongAttempts = 0;
 bool lockActive = false;
@@ -58,7 +63,6 @@ void setup() {
   lcd.init();
   lcd.backlight();
 
-  // EEPROM load
   bool valid = true;
   for(int i=0;i<4;i++){
     char c = EEPROM.read(i);
@@ -88,40 +92,21 @@ void setup() {
 // ===== LOOP =====
 void loop() {
 
-  // 🔥 RFID FIRST (IMPORTANT FIX)
+  // RFID FIRST
   if (checkRFID()) return;
 
-  // ===== LOCK MODE =====
+  // LOCK MODE
   if (lockActive) {
-
     unsigned long elapsed = millis() - lockTime;
 
     if (elapsed < 300000) {
-
-      unsigned long remaining = 300000 - elapsed;
-      int sec = remaining / 1000;
-      int min = sec / 60;
-      sec = sec % 60;
-
       lcd.setCursor(0,0);
       lcd.print("SYSTEM LOCKED");
-
-      lcd.setCursor(0,1);
-      lcd.print("Time: ");
-
-      if(min < 10) lcd.print("0");
-      lcd.print(min);
-      lcd.print(":");
-
-      if(sec < 10) lcd.print("0");
-      lcd.print(sec);
-
       delay(1000);
-      return; // keypad block
-    } 
-    else {
+      return;
+    } else {
       lockActive = false;
-      wrongAttempts = 4; // only 1 chance
+      wrongAttempts = 4;
 
       lcd.clear();
       lcd.print("Try Again");
@@ -132,16 +117,37 @@ void loop() {
     }
   }
 
-  // ===== KEYPAD =====
+  // KEYPAD
   char key = keypad.getKey();
-  if (!key) return;
 
-  // ===== CHANGE MODE =====
+  // LONG PRESS #
+  if (key == '#') {
+    if (!hashPressed) {
+      hashPressed = true;
+      keyPressTime = millis();
+    }
+  }
+
+  if (hashPressed && key == NO_KEY) {
+    if (millis() - keyPressTime > 2000) {
+      requestPinChange = true;
+
+      lcd.clear();
+      lcd.print("Scan RFID to");
+      lcd.setCursor(0,1);
+      lcd.print("Change PIN");
+    }
+    hashPressed = false;
+  }
+
+  if (!key && !requestPinChange) return;
+
+  // CHANGE MODE
   if (changeMode) {
 
     newPIN += key;
     lcd.setCursor(0,1);
-    lcd.print("**");
+    lcd.print("*");
 
     if (newPIN.length() == 4) {
 
@@ -154,7 +160,7 @@ void loop() {
         if (k) {
           confirmPIN += k;
           lcd.setCursor(0,1);
-          lcd.print("**");
+          lcd.print("*");
         }
       }
 
@@ -181,52 +187,35 @@ void loop() {
     return;
   }
 
-  // ===== NORMAL PIN =====
-  enteredPIN += key;
-  lcd.setCursor(0,1);
-  lcd.print("*");
+  // NORMAL PIN
+  if (key) {
+    enteredPIN += key;
+    lcd.setCursor(0,1);
+    lcd.print("*");
 
-  if (enteredPIN.length() == 4) {
-
-    lcd.clear();
-
-    if (enteredPIN == correctPIN) {
-      lcd.print("PIN Correct");
-      openDoor();
-      wrongAttempts = 0;
-
-    } else {
-      wrongAttempts++;
-
-      if (wrongAttempts == 4) {
-        lcd.print("Last Attempt!");
-      } else {
-        lcd.print("Wrong PIN");
-        lcd.setCursor(0,1);
-        lcd.print("Attempts:");
-        lcd.print(wrongAttempts);
-        lcd.print("/5");
-      }
-    }
-
-    enteredPIN = "";
-    delay(2000);
-
-    if (wrongAttempts >= 5) {
-      lockActive = true;
-      lockTime = millis();
+    if (enteredPIN.length() == 4) {
 
       lcd.clear();
-      lcd.print("SYSTEM LOCKED");
-      delay(2000);
-    }
 
-    lcd.clear();
-    lcd.print("Scan / Enter PIN");
+      if (enteredPIN == correctPIN) {
+        lcd.print("PIN Correct");
+        openDoor();
+        wrongAttempts = 0;
+      } else {
+        wrongAttempts++;
+        lcd.print("Wrong PIN");
+      }
+
+      enteredPIN = "";
+      delay(2000);
+
+      lcd.clear();
+      lcd.print("Scan / Enter PIN");
+    }
   }
 }
 
-// ===== RFID FUNCTION (FIXED) =====
+// ===== RFID =====
 bool checkRFID(){
 
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
@@ -242,53 +231,40 @@ bool checkRFID(){
     lcd.clear();
 
     if (match) {
+
+      // 👉 PIN CHANGE FLOW
+      if (requestPinChange) {
+        changeMode = true;
+        requestPinChange = false;
+
+        lcd.print("Enter New PIN");
+        return true;
+      }
+
+      // 👉 NORMAL ACCESS
       lcd.print("Access Granted");
       openDoor();
 
-      // RESET LOCK
       lockActive = false;
       wrongAttempts = 0;
       lockTime = 0;
 
-      // PIN CHANGE OPTION
-      lcd.clear();
-      lcd.print("Press # to");
-      lcd.setCursor(0,1);
-      lcd.print("Change PIN");
-
-      unsigned long startTime = millis();
-
-      while (millis() - startTime < 5000) {
-
-        char key = keypad.getKey();
-
-        if (key == '#') {
-          changeMode = true;
-          newPIN = "";
-          confirmPIN = "";
-
-          lcd.clear();
-          lcd.print("New PIN:");
-          return true;
-        }
-      }
-
       lcd.clear();
       lcd.print("Scan / Enter PIN");
 
-      return true; // 🔥 important
+      return true;
     } 
     else {
       lcd.print("Access Denied");
       delay(2000);
+
       lcd.clear();
       lcd.print("Scan / Enter PIN");
-
-      return true; // card read ho gaya
+      return true;
     }
   }
 
-  return false; // no card
+  return false;
 }
 
 // ===== DOOR =====
